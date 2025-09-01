@@ -8,39 +8,43 @@ export default function PlayerShaka({ src, onClose }: { src: string; onClose: ()
   const [err, setErr] = useState<string | null>(null)
 
   useEffect(() => {
-    const container = containerRef.current!
-    const video = document.createElement('video')
-    video.className = 'shaka-video'
-    video.controls = true
-    video.playsInline = true
-    // IMPORTANT: allow cross-origin text tracks when using native <track>
-    video.crossOrigin = 'anonymous'
-    videoRef.current = video
-
-    container.innerHTML = ''
-    container.appendChild(video)
-
-    const player = new shaka.Player(video)
-    const ui = new (shaka as any).ui.Overlay(player, container, video)
-    ui.getControls()
-
-    // Prefer English automatically
-    player.configure({ preferredAudioLanguage: 'eng', preferredTextLanguage: 'eng' })
-
-    const onError = (e: any) => {
-      const msg = e?.detail?.message || e?.detail || e?.toString?.() || 'Playback error'
-      // eslint-disable-next-line no-console
-      console.error('SHAKA ERROR:', e)
-      setErr(String(msg))
-    }
-    player.addEventListener('error', onError)
-
     let destroyed = false
     ;(async () => {
+      await waitForCastApi(1500)
+
+      const container = containerRef.current!
+      const video = document.createElement('video')
+      video.className = 'shaka-video'
+      video.controls = true
+      video.playsInline = true
+      video.crossOrigin = 'anonymous'
+      videoRef.current = video
+
+      container.innerHTML = ''
+      container.appendChild(video)
+
+      const player = new shaka.Player(video)
+      const ui = new (shaka as any).ui.Overlay(player, container, video)
+
+      ui.configure({
+        castReceiverAppId: 'CC1AD845',
+        addCastButton: true,
+      })
+
+      player.configure({ preferredAudioLanguage: 'eng', preferredTextLanguage: 'eng' })
+
+      const onError = (e: any) => {
+        const msg = e?.detail?.message || e?.detail || e?.toString?.() || 'Playback error'
+        // eslint-disable-next-line no-console
+        console.error('SHAKA ERROR:', e)
+        if (!destroyed) setErr(String(msg))
+      }
+
+      player.addEventListener('error', onError)
+
       try {
         await player.load(src)
 
-        // Try to attach sidecar VTT next to master.m3u8 (…/subs.vtt)
         const subsUrl = guessSidecarVtt(src)
         if (subsUrl && (await urlExists(subsUrl))) {
           const anyPlayer: any = player as any
@@ -49,16 +53,13 @@ export default function PlayerShaka({ src, onClose }: { src: string; onClose: ()
             (typeof anyPlayer.addTextTrackAsync === 'function' && anyPlayer.addTextTrackAsync)
 
           if (addText) {
-            // Some builds expose addTextTrackAsync instead of addTextTrack
             await addText.call(player, subsUrl, 'eng', 'subtitles', 'text/vtt', '', 'English')
             if (typeof anyPlayer.setTextTrackVisibility === 'function') {
               anyPlayer.setTextTrackVisibility(true)
             } else {
-              // Older versions: via UI controls
               try { (ui as any).getControls()?.setTextTrackVisibility?.(true) } catch {}
             }
           } else {
-            // Fallback: native <track> (crossOrigin on <video> is required for cross-site)
             const track = document.createElement('track')
             track.kind = 'subtitles'
             track.label = 'English'
@@ -73,15 +74,17 @@ export default function PlayerShaka({ src, onClose }: { src: string; onClose: ()
           }
         }
       } catch (e) {
-        if (!destroyed) onError(e)
+        onError(e)
+      }
+
+      return () => {
+        destroyed = true
+        try { (player as any).destroy?.() } catch {}
+        try { if (container.contains(video)) container.removeChild(video) } catch {}
       }
     })()
 
-    return () => {
-      destroyed = true
-      try { player.destroy() } catch {}
-      try { if (container.contains(video)) container.removeChild(video) } catch {}
-    }
+    return () => { /* cleanup done in inner async */ }
   }, [src])
 
   return (
@@ -96,7 +99,21 @@ export default function PlayerShaka({ src, onClose }: { src: string; onClose: ()
   )
 }
 
-/** If URL ends with /master.m3u8, return same folder /subs.vtt */
+function waitForCastApi(timeoutMs = 1500): Promise<void> {
+  return new Promise((resolve) => {
+    const win = window as any
+    if (win.cast && win.cast.framework) return resolve()
+    const t0 = Date.now()
+    const int = setInterval(() => {
+      if (win.cast && win.cast.framework) {
+        clearInterval(int); resolve()
+      } else if (Date.now() - t0 > timeoutMs) {
+        clearInterval(int); resolve()
+      }
+    }, 50)
+  })
+}
+
 function guessSidecarVtt(masterUrl: string): string | null {
   try {
     const u = new URL(masterUrl)
@@ -108,7 +125,6 @@ function guessSidecarVtt(masterUrl: string): string | null {
   return null
 }
 
-/** HEAD (then GET) to check existence with CORS */
 async function urlExists(url: string): Promise<boolean> {
   try {
     const r = await fetch(url, { method: 'HEAD', mode: 'cors' })
