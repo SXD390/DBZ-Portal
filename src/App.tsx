@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { fetchCatalog, fetchPlayUrl, type Folder, type FileItem, type CatalogResponse } from './api'
 import Video from './Video'
+import PlayerShaka from './PlayerShaka'
 
 type Crumb = { label: string; prefix: string }
 
@@ -62,7 +63,9 @@ export default function App() {
         </div>
 
         {playingUrl && (
-          <Video src={playingUrl} onClose={() => setPlayingUrl(null)} />
+          playingUrl.endsWith('.m3u8')
+            ? <PlayerShaka src={playingUrl} onClose={() => setPlayingUrl(null)} />
+            : <Video src={playingUrl} onClose={() => setPlayingUrl(null)} />
         )}
 
         <div className="controls">
